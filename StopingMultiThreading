@@ -1,0 +1,141 @@
+
+
+import threading
+import ctypes
+import inspect
+from time import sleep
+
+isException = False
+
+class Execution_SubTask(threading.Thread):
+    
+    '''If the callback_class is Executioner,
+    it needs catch the exception and update the log time.
+    Other class would update the log time by itself'''
+    
+    def __init__(self, name, event, callback_func, **kwargs):
+        threading.Thread.__init__(self)
+        self.event = event
+        self.setName(name)
+        self.phase_name = None
+        self.callback_func = callback_func
+        
+    def _get_my_tid(self):
+        """
+        Determines this (self's) thread id
+
+        CAREFUL : this function is executed in the context of the caller
+        thread, to get the identity of the thread represented by this
+        instance.
+        """
+        if not self.is_alive():
+            raise threading.ThreadError("the thread is not active")
+        for tid, tobj in threading._active.iteritems():
+            if tobj is self:
+                print "thread id:%s" % tid
+                return tid
+        raise AssertionError('Could not determine thread ID')
+
+    def raise_exc(self, exctype):
+        """
+        Raises the given exception type in the context of this thread.
+
+        If the thread is busy in a system call (time.sleep(),
+        socket.accept(), ...), the exception is simply ignored.
+
+        If you are sure that your exception should terminate the thread,
+        one way to ensure that it works is:
+
+            t = ThreadWithExc( ... )
+            ...
+            t.raiseExc( SomeException )
+            while t.isAlive():
+                time.sleep( 0.1 )
+                t.raiseExc( SomeException )
+
+        If the exception is to be caught by the thread, you need a way to
+        check that your thread has caught it.
+
+        CAREFUL : this function is executed in the context of the
+        caller thread, to raise an excpetion in the context of the
+        thread represented by this instance.
+        """
+        _async_raise(self._get_my_tid(), exctype)
+
+    def exit_thread(self):
+        self.raise_exc(SystemExit)
+
+    def run(self):
+        try:
+            name = self.getName()
+            self.phase_name = name.replace('_', ' ')
+            self.callback_func()
+        except Exception, s:
+            print 'Execution_SubTask Error Enter!'
+            global isException
+            isException = True
+        finally:
+            self.event.set()
+        
+    def __str__(self):
+        return self.getName()
+    
+def _async_raise(tid, exctype):
+    """
+    Raises an exception in the threads with id tid
+    """
+    print '------------_async_raise-------------------'
+    if not inspect.isclass(exctype):
+        raise TypeError("Only types can be raised (not instances)")
+    res = ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_long(tid),ctypes.py_object(exctype))
+    print "res:%s" % res
+    if res == 0:
+        raise ValueError("invalid thread id")
+    elif res != 1:
+        # "if it returns a number greater than one, you're in trouble,
+        # and you should call it again with exc=NULL to revert the effect"
+        ctypes.pythonapi.PyThreadState_SetAsyncExc(tid, 0)
+        raise SystemError("PyThreadState_SetAsyncExc failed")
+
+def subTask1_func():
+    print "begin task1"
+    for i in range(1, 100):
+        print i
+        sleep(1)
+    print "end task1"
+    
+def subTask2_func():
+    print "begin task2"
+    raise
+    print "end task2"
+
+if __name__ == "__main__":
+    subTask1_event = threading.Event()
+    subTask2_event = threading.Event()
+    
+    subTask1 = Execution_SubTask("subTask1", subTask1_event, subTask1_func)
+    subTask2 = Execution_SubTask("subTask2", subTask2_event, subTask2_func)
+    
+    subTask1.start()
+    subTask2.start()
+    
+    while subTask1.is_alive() or subTask2.is_alive():
+        if isException:
+            print "change"
+            try:
+                if subTask1.is_alive():
+                    print "kill subTask1"
+                    subTask1.raise_exc(StopIteration)
+                    subTask1.join()
+                    if subTask1.is_alive():
+                        print "kill fail"
+					else:
+					    print "******* kill success."
+                if subTask2.is_alive():
+                    print "kill subTask2"
+                    subTask2.raise_exc(StopIteration)
+            except AssertionError, s:
+                print "AssertionError"
+        sleep(1)
+        
+    print "over"
